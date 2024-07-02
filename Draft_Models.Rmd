@@ -1,0 +1,812 @@
+---
+title: "Total Sales R Code"
+author: "Jorge Fernandez"
+date: "2024-05-26"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval=TRUE, echo = TRUE, warning = FALSE, message=FALSE)
+```
+**Loading Libraries**
+```{r}
+library(ggplot2)
+library(ggfortify)
+library(janitor)
+library(dplyr)
+library(lubridate)
+library(grid)
+library(gridExtra)
+library(ggplotify)
+library(cowplot)
+library(kableExtra)
+library(ggpubr)
+library(forecast)
+library(fBasics)
+library(fpp2)
+library(zoo)
+library(lmtest)
+library(tseries)
+library(fUnitRoots)
+library(astsa) 
+library(dynlm) 
+library(FinTS)
+library(rugarch)
+source("eacf.R")
+source("Backtest.R")
+source("run_stationarity_tests.R")
+source("summarize_arima_models.R")
+```
+
+## Read In Data
+```{r}
+retail <- read.csv("train.csv")
+```
+
+## Some Initial Cleaning
+```{r}
+# Clean column names
+retail<-clean_names(retail)
+colnames(retail)
+
+# Convert date cols to Date format
+retail$order_date<-as.Date(retail$order_date,'%d/%m/%Y')
+retail$ship_date<-as.Date(retail$ship_date, '%d/%m/%Y')
+```
+
+## EDA
+
+**Total Orders and Sales by Category**
+```{r}
+# Summarize total sales by category
+sales_by_category <- retail %>%
+  group_by(category) %>%
+  summarize(total_sales = sum(sales), .groups = 'drop')
+
+# Summarize total orders by category
+orders_by_category <- retail %>%
+  group_by(category) %>%
+  summarize(total_orders = n(), .groups = 'drop')
+
+# Total Sales by Category
+sales_plot <- ggplot(sales_by_category, aes(x = reorder(category, total_sales), y = total_sales, fill = category)) +
+  geom_col(show.legend = FALSE) +
+  labs(title = "Total Sales by Category", x = NULL, y = "Total Sales") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.x = element_blank())  # Remove x-axis title
+
+# Total Orders by Category
+orders_plot <- ggplot(orders_by_category, aes(x = reorder(category, total_orders), y = total_orders, fill = category)) +
+  geom_col(show.legend = FALSE) +
+  labs(title = "Total Orders by Category", x = NULL, y = "Total Orders") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.x = element_blank())  # Remove x-axis title
+
+# Arrange the plots in a grid
+grid.arrange(sales_plot, orders_plot, ncol = 2)
+
+```
+
+```{r}
+# Add a log of sales column
+retail <- retail %>%
+  mutate(log_sales = log(sales))
+
+# Plot for the log of all sales
+log_sales_plot <- ggplot(retail, aes(x = log_sales)) +
+  geom_density(fill = "lightgray", alpha = 0.5) +
+  labs(title = "Density Log(All Sales)", x = "Log of Sales", y = "Density") +
+  theme_minimal()
+
+# Plot for the log of sales by category
+log_sales_by_category_plot <- ggplot(retail, aes(x = log_sales, fill = category)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density of Log(Sales) by Category", x = "Log of Sales", y = "Density") +
+  theme_minimal() +
+  theme(legend.position = "right")  
+
+# Arrange the plots in a grid
+grid.arrange(log_sales_plot, log_sales_by_category_plot, ncol = 2)
+```
+
+```{r}
+# Ensure order_date is a Date object
+retail$order_date <- as.Date(retail$order_date)
+
+# Aggregate total weekly sales
+weekly_sales_total <- retail %>%
+  mutate(week_year = as.Date(cut(order_date, "week"))) %>%
+  group_by(week_year) %>%
+  summarize(total_sales = sum(sales), .groups = 'drop')
+
+# Aggregate weekly sales by category
+weekly_sales_category <- retail %>%
+  mutate(week_year = as.Date(cut(order_date, "week"))) %>%
+  group_by(week_year, category) %>%
+  summarize(total_sales = sum(sales), .groups = 'drop')
+
+# Plot for total weekly sales
+total_sales_plot <- ggplot(weekly_sales_total, aes(x = week_year, y = total_sales)) +
+  geom_line(color = "black", size = 0.5, alpha = 0.8) +
+  labs(title = "Total Weekly Sales", x = "Week", y = "Sales") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot for weekly sales by category
+sales_by_category_plot <- ggplot(weekly_sales_category, aes(x = week_year, y = total_sales, color = category)) +
+  geom_line(size = 0.5, alpha = 0.8) +
+  labs(title = "Weekly Sales by Category", x = "Week", y = "Sales") +
+  theme_minimal() +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5)) +
+  scale_color_manual(values = c("Furniture" = "firebrick", "Office Supplies" = "seagreen", "Technology" = "steelblue"))
+
+```
+
+```{r}
+library(patchwork)
+
+# Combining the plots
+plot_layout <- (total_sales_plot / sales_by_category_plot) +
+  plot_layout(heights = c(15, 16))  # Adjusting relative heights
+
+plot_layout
+```
+
+**Total Sales by Day of Week and Month of Year**
+```{r}
+# Adding day of the week column
+retail <- retail %>%
+  mutate(day_of_week = wday(order_date, label = TRUE, abbr = FALSE))
+
+# Adding month column
+retail <- retail %>%
+  mutate(month = month(order_date, label = TRUE, abbr = TRUE))
+
+# Summarizing to get total sales by day, month, week
+total_sales_by_day <- retail %>%
+  group_by(day_of_week) %>%
+  summarize(total_sales = sum(sales), .groups = 'drop') %>%
+  arrange(day_of_week)
+
+total_sales_by_month <- retail %>%
+  group_by(month) %>%
+  summarize(total_sales = sum(sales), .groups = 'drop') %>%
+  arrange(match(month, month.name)) 
+
+# Bar plots
+ggplot(total_sales_by_day, aes(x = day_of_week, y = total_sales, fill = day_of_week)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Total Sales by Day of the Week",
+       x = "Day of the Week",
+       y = "Total Sales") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Paired")
+
+ggplot(total_sales_by_month, aes(x = month, y = total_sales, fill = month)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Total Sales by Month of the Year",
+       x = "Month of the Year",
+       y = "Total Sales") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Paired")
+```
+**Total Sales by Day of the Month**
+```{r}
+# Extract day of the month and month name
+retail <- retail %>%
+  mutate(day_of_month = day(order_date),
+         month_name = month(order_date, label = TRUE, abbr = TRUE))  # abbr = TRUE for abbreviated month names
+
+# Summarize
+sales_by_day_month <- retail %>%
+  group_by(month_name, day_of_month) %>%
+  summarize(total_sales = sum(sales), .groups = 'drop') %>%
+  arrange(month_name, day_of_month)
+
+# Line plot with faceting for each month
+ggplot(sales_by_day_month, aes(x = as.factor(day_of_month), y = total_sales, group = 1)) +
+  geom_line(color = "dodgerblue") +
+  facet_wrap(~month_name, scales = "free_y") +
+  labs(title = "Total Sales by Day of the Month, by Month",
+       x = "Day of the Month",
+       y = "Total Sales") +
+  theme_minimal()
+```
+
+
+## Weekly Aggregation
+```{r}
+# Group by year and week, and summarize sales
+weekly_sales <- retail %>%
+  mutate(week_year = as.Date(cut(order_date, "week"))) %>%
+  group_by(week_year) %>%
+  summarize(total_sales = sum(sales), .groups = 'drop')
+
+# Create a zoo object
+sales_zoo_weekly <- zoo(weekly_sales$total_sales, order.by = weekly_sales$week_year)
+sales_ts_weekly <- ts(weekly_sales$total_sales, frequency=52)
+```
+
+
+**Plotting time series data vs time w/ Loess Regression line**
+```{r}
+# Convert zoo object to a data frame for ggplot
+sales_data_frame <- data.frame(Date = index(sales_zoo_weekly), Sales = coredata(sales_zoo_weekly))
+
+# Create an enhanced time series plot using ggplot2
+ggplot(sales_data_frame, aes(x = Date, y = Sales)) +
+  geom_line(color = "black") +  # Customize line color and thickness
+  geom_smooth(method = "loess", color = "red2", se = FALSE, span = 0.1) + 
+  labs(title = "Weekly Sales Over Time", x = "Date", y = "Total Sales") +
+  theme_minimal() +  # Use a minimalistic theme
+  theme(axis.title.x = element_text(face = "bold", color = "gray20"),  # Customize x-axis title
+        axis.title.y = element_text(face = "bold", color = "gray20"))  # Customize y-axis title
+```
+
+* Perhaps some multiplicative behavior, though maybe not
+* Definite seasonality
+
+```{r}
+autoplot(decompose(sales_ts_weekly))
+```
+
+
+**Checking for Normality**
+```{r}
+ggqqplot(sales_ts_weekly,
+                    ylab = "Quantiles of Sales",
+                    xlab = "Theoretical Quantiles",
+                    ggtheme = theme_minimal(), 
+                    color = "steelblue4", 
+                    conf.int = TRUE,
+                    title = "QQ Plot of Weekly Sales")
+
+jb_test <- jarque.bera.test(sales_ts_weekly)
+print(jb_test) # small p-value so data comes from non-normal distribution
+```
+
+**ACF and PACF plots**
+```{r}
+# significance level
+N <- length(sales_ts_weekly)
+sig_level <- 1.96 / sqrt(N)
+
+# Exract acf and pacf data
+acf_data <- acf(sales_ts_weekly, lag.max = 104, plot = FALSE)
+pacf_data <- pacf(sales_ts_weekly, lag.max = 104, plot = FALSE)
+
+# ACF Plot with significance lines
+ggplot(data.frame(Lag = acf_data$lag[-1], ACF = acf_data$acf[-1]), aes(x = Lag, y = ACF)) +  # Exclude lag 0
+  geom_bar(stat = "identity", fill = "steelblue", width = 0.01) + 
+  geom_hline(yintercept = c(-sig_level, sig_level), linetype = "dashed", color = "darkred") +
+  labs(title = "ACF", x = "Lag", y = "ACF") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+
+# PACF Plot with significance lines
+ggplot(data.frame(Lag = pacf_data$lag, PACF = pacf_data$acf), aes(x = Lag, y = PACF)) +
+  geom_bar(stat = "identity", fill = "darkred", width = 0.01) + 
+  geom_hline(yintercept = c(-sig_level, sig_level), linetype = "dashed", color = "darkblue") +
+  labs(title = "PACF", x = "Lag", y = "PACf") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+```
+
+$\text{\underline{Stationarity}}$
+
+- Most tests indicate that the series is stationary, however the KPSS test indicates the series is *not* level stationary.
+- 1st Differences t-test: Suggests that the series does not have a strong deterministic trend. Since the mean of the first differences is not significantly different from zero, it implies that any trend in the original series is likely stochastic rather than deterministic.
+
+$\text{\underline{Seasonality}}$
+
+- The ACF plot definitely indicates seasonality, at about 52 lags (52 weeks = 1 year)
+
+$\text{\underline{ARMA Order}}$
+- ACF suggests higher order MA (7 significant lags)
+- PACF suggests maybe AR(2)
+
+**Looking at mean of differences**
+```{r}
+mean(diff(sales_ts_weekly))
+t.test(diff(sales_ts_weekly)) # cannot reject that the mean is actually 0
+```
+
+**KPSS and ADF Tests**
+```{r}
+# summary_table = summarize_arima_models(model1,model2, model3, model4, model5, model6)
+# kable(table, format = "html", caption = "Manual Models") %>%
+#   kable_classic(full_width = F, html_font = "Cambria")
+
+run_stationarity_tests(sales_ts_weekly)
+```
+
+
+**Since there seems to be a stochastic trend, maybe differencing is appropriate**
+
+## Looking at 2-Stage Differenced Timeseries
+```{r}
+two_diff_zoo = diff(diff(sales_zoo_weekly), 52)
+two_diff_ts = diff(diff(sales_ts_weekly), 52)
+
+# Convert zoo object to a data frame for ggplot
+diff_data_frame <- data.frame(Date = index(two_diff_zoo), Sales = coredata(two_diff_zoo))
+
+# Time series plot using ggplot2
+ggplot(diff_data_frame, aes(x = Date, y = Sales)) +
+  geom_line(color = "black") +
+  geom_smooth(method = "loess", color = "red2", se = FALSE, span = 0.1) + 
+  labs(title = "Seasonal Weekly Sales Differences", x = "Date", y = "Sales Seasonal Diffs") +
+  theme_minimal() + 
+  theme(axis.title.x = element_text(face = "bold", color = "gray20"),  
+        axis.title.y = element_text(face = "bold", color = "gray20"))  
+
+autoplot(decompose(two_diff_ts))
+
+ggqqplot(two_diff_ts,
+                    ylab = "Quantiles of Sales",
+                    xlab = "Theoretical Quantiles",
+                    ggtheme = theme_minimal(),  
+                    color = "steelblue4", 
+                    conf.int = TRUE,
+                    title = "QQ Plot of Weekly Sales")
+
+# significance level
+N <- length(two_diff_ts)
+sig_level <- 1.96 / sqrt(N)
+
+# Exract acf and pacf data
+acf_data <- acf(two_diff_ts, lag.max = 104, plot = FALSE)
+pacf_data <- pacf(two_diff_ts, lag.max = 104, plot = FALSE)
+
+# ACF Plot with significance lines
+ggplot(data.frame(Lag = acf_data$lag[-1], ACF = acf_data$acf[-1]), aes(x = Lag, y = ACF)) +  # Exclude lag 0
+  geom_bar(stat = "identity", fill = "steelblue", width = 0.01) + 
+  geom_hline(yintercept = c(-sig_level, sig_level), linetype = "dashed", color = "darkred") +
+  labs(title = "ACF", x = "Lag", y = "ACF") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+
+# PACF Plot with significance lines
+ggplot(data.frame(Lag = pacf_data$lag, PACF = pacf_data$acf), aes(x = Lag, y = PACF)) +
+  geom_bar(stat = "identity", fill = "darkred", width = 0.01) + 
+  geom_hline(yintercept = c(-sig_level, sig_level), linetype = "dashed", color = "darkblue") +
+  labs(title = "PACF", x = "Lag", y = "PACf") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+
+run_stationarity_tests(two_diff_ts)
+```
+
+```{r}
+# Jarque-Bera test
+jb_test <- jarque.bera.test(two_diff_ts)
+print(jb_test) # Large p-value so data comes from normal distribution
+```
+
+```{r}
+run_stationarity_tests(two_diff_ts)
+```
+
+$\text{\underline{Stationarity}}$
+
+- Looks like there might be signs of overdifferencing
+- Definitely stationary though
+- Some cyclical patterns in ACF indicating seasonality, though the lags aren't significant
+
+
+## Making SARIMA Models
+
+Building Model Based off Previous Analysis:
+```{r, fig.keep = 'none'}
+model1 = Arima(sales_ts_weekly, order=c(0, 1, 1), seasonal=list(order=c(0, 1, 1), period=52))
+summary(model1)
+coeftest(model1)
+Acf(model1$residuals, lag.max=52)
+pacf(model1$residuals, lag.max=52)
+Box.test(model1$residuals, type="L")
+plot(forecast(model1, h=52))
+```
+
+Auto Arima Models:
+```{r, fig.keep = 'none'}
+auto_with_aic = auto.arima(sales_ts_weekly, ic='aic')
+summary(auto_with_aic)
+coeftest(auto_with_aic)
+Acf(auto_with_aic$residuals, lag.max=52)
+pacf(auto_with_aic$residuals, lag.max=52)
+Box.test(auto_with_aic$residuals, type="L")
+plot(forecast(auto_with_aic, h=52))
+```
+
+```{r, fig.keep = 'none'}
+auto_with_bic = auto.arima(sales_ts_weekly, ic='bic')
+print(auto_with_bic)
+coeftest(auto_with_bic)
+Acf(auto_with_bic$residuals, lag.max=52)
+pacf(auto_with_bic$residuals, lag.max=52)
+Box.test(auto_with_bic$residuals, type="L")
+plot(forecast(auto_with_bic, h=52))
+```
+**auto.arima with Box Cox**
+```{r, fig.keep = 'none'}
+auto_with_aic = auto.arima(sales_ts_weekly, ic='aic', lambda="auto")
+print(auto_with_aic)
+coeftest(auto_with_aic)
+Acf(auto_with_aic$residuals, lag.max=52)
+pacf(auto_with_aic$residuals, lag.max=52)
+Box.test(auto_with_aic$residuals, type="L")
+plot(forecast(auto_with_aic, h=52))
+```
+
+```{r, fig.keep = 'none'}
+auto_with_bic = auto.arima(sales_ts_weekly, ic='bic', lambda='auto')
+print(auto_with_bic)
+coeftest(auto_with_bic)
+Acf(auto_with_bic$residuals, lag.max=52)
+pacf(auto_with_bic$residuals, lag.max=52)
+Box.test(auto_with_bic$residuals, type="L")
+plot(forecast(auto_with_bic, h=52))
+```
+
+**Generating models with different parameter combinations**
+```{r}
+# Non-seasonal ARIMA orders
+orders <- expand.grid(p = 0:2, d = 1, q = 0:2)
+
+# Seasonal ARIMA orders
+seasonal_orders <- expand.grid(P = 0:1, D = 0:1, Q = 0:1, s = 52)
+
+# Initialize lists
+model_list <- list()
+problematic_models <- list()
+```
+
+
+```{r}
+# Generate models with all combinations
+for (i in 1:nrow(orders)) {
+  for (j in 1:nrow(seasonal_orders)) {
+    model_label <- paste("model", 
+                         paste(orders[i, ], collapse = "_"), 
+                         "x", 
+                         paste(seasonal_orders[j, ], collapse = "_"), 
+                         sep = "_")
+    # tryCatch to handle errors
+    result <- tryCatch({
+      # Fit ARIMA model
+      Arima(sales_ts_weekly,
+            order = as.numeric(orders[i, 1:3]),
+            seasonal = list(order = as.numeric(seasonal_orders[j, 1:3]),
+                            period = as.integer(seasonal_orders[j, 4]))
+      ) # Correctly close Arima function call
+    }, 
+    error = function(e) {
+        # Handle error by returning NULL and logging the error
+        cat(sprintf("Error in model %s: %s\n", model_label, e$message))
+        return(NULL)
+    })
+
+    # Only store successful models
+    if (!is.null(result)) {
+      model_list[[model_label]] <- result
+    } else {
+      # Store problematic model configurations
+      problematic_models[[model_label]] <- list(order = orders[i, ], seasonal_order = seasonal_orders[j, ])
+    }
+  }
+}
+
+```
+
+
+**Best Models**
+```{r, fig.keep = 'none'}
+model1 = Arima(sales_ts_weekly, order=c(0, 1, 1), seasonal=list(order=c(0, 1, 1), period=52))
+summary(model1)
+coeftest(model1)
+Acf(model1$residuals, lag.max=52)
+pacf(model1$residuals, lag.max=52)
+Box.test(model1$residuals, type="L")
+plot(forecast(model1, h=52))
+```
+
+```{r, fig.keep = 'none'}
+model2 = Arima(sales_ts_weekly, order=c(0, 1, 2), seasonal=list(order=c(0, 1, 1), period=52))
+summary(model2)
+coeftest(model2)
+Acf(model2$residuals, lag.max=104)
+pacf(model2$residuals, lag.max=104)
+Box.test(model2$residuals, type="L")
+plot(forecast(model2, h=104))
+```
+
+
+```{r}
+model3 = Arima(sales_ts_weekly, order=c(1, 1, 2), seasonal=list(order=c(0, 1, 1), period=52))
+summary(model3)
+coeftest(model3)
+Acf(model3$residuals, lag.max=104)
+pacf(model3$residuals, lag.max=104)
+plot(forecast(model3, h=104))
+```
+
+```{r}
+model_new = Arima(sales_ts_weekly, order=c(5, 1, 1), seasonal=list(order=c(1, 1, 1), period=52))
+summary(model_new)
+coeftest(model_new)
+Acf(model_new$residuals, lag.max=104)
+pacf(model_new$residuals, lag.max=104)
+plot(forecast(model_new, h=104))
+```
+
+**Including Box-Cox Tranforms**
+```{r}
+library("MASS")
+```
+
+```{r}
+fit = lm(sales_ts_weekly ~ time(sales_ts_weekly))
+plot(fit$residuals ~ fit$fitted.values)
+plot(fit)
+boxcox(fit)
+```
+
+
+```{r}
+model4 = Arima(sales_ts_weekly, order=c(0, 1, 1), seasonal=list(order=c(0, 1, 1), period=52), lambda="auto")
+summary(model4)
+coeftest(model4)
+Acf(model4$residuals, lag.max=104)
+pacf(model4$residuals, lag.max=104)
+plot(forecast(model4, h=104))
+residuals <- residuals(model4)
+Box.test(residuals, lag = 10, type = "Ljung-Box")
+```
+
+```{r}
+model5 = Arima(sales_ts_weekly, order=c(0, 1, 2), seasonal=list(order=c(0, 1, 1), period=52), lambda="auto")
+summary(model5)
+coeftest(model5)
+Acf(model5$residuals, lag.max=104)
+pacf(model5$residuals, lag.max=104)
+plot(forecast(model5, h=104))
+residuals <- residuals(model5)
+Box.test(residuals, lag = 10, type = "Ljung-Box")
+```
+
+```{r}
+model6 = Arima(sales_ts_weekly, order=c(1, 1, 2), seasonal=list(order=c(0, 1, 1), period=52), lambda="auto")
+summary(model6)
+coeftest(model6)
+Acf(model6$residuals, lag.max=104)
+pacf(model6$residuals, lag.max=104)
+plot(forecast(model6, h=104))
+residuals <- residuals(model6)
+Box.test(residuals, lag = 10, type = "Ljung-Box")
+```
+
+```{r}
+model7 = Arima(sales_ts_weekly, order=c(5, 1, 1), seasonal=list(order=c(1, 1, 1), period=52), lambda="auto")
+summary(model7)
+coeftest(model7)
+Acf(model7$residuals, lag.max=104)
+pacf(model7$residuals, lag.max=104)
+plot(forecast(model7, h=104))
+residuals <- residuals(model7)
+Box.test(residuals, lag = 10, type = "Ljung-Box")
+```
+
+
+
+```{r}
+summary_table <- do.call(summarize_arima_models, model_list)
+
+# Display the summary table using kable
+kable(summary_table, format = "html", caption = "Summary of Expanded ARIMA Models") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+
+```{r}
+sorted_df <- summary_table[order(summary_table$AIC, summary_table$BIC),]
+
+# Select the top 3 entries
+top_three_models <- head(sorted_df, 3)
+
+# Display the top three models
+print(top_three_models)
+```
+
+
+Comparing Models
+```{r}
+summary_table = summarize_arima_models(model1, model2, model3, model_new)
+kable(summary_table, format = "html", caption = "Best SARIMA Models") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+```{r}
+summary_table <- mutate(summary_table, `Transform λ` = NA_real_)
+
+model_descriptions <- c(
+  "SARIMA(0,1,1)(0,1,1)[52] w/ λ",
+  "SARIMA(0,1,2)(0,1,1)[52] w/ λ",
+  "SARIMA(1,1,2)(0,1,1)[52] w/ λ",
+  "SARIMA(5,1,1)(1,1,1)[52] w/ λ"
+)
+
+# Define new rows
+new_data <- tibble(
+  Num_Params = c(2, 3, 4, 8), 
+  AIC = c(2736.82, 2736.85, 2736.82, 2739.93),
+  BIC = c(2745.97, 2749.05, 2752.07, 2767.38),  
+  Sigma2 = c(1908740, 1892540, 1850103, 1905153),  
+  ACF1 = c(-0.08095574, 0.02305056, 0.02660522, 0.01637678),  
+  Ljung_Box_pvalue = c(0.3207, 0.3293, 0.6162, 0.963),  
+  `Transform λ` = rep(0.84, 4)
+)
+
+# Combine the model descriptions with the data
+new_data$Model <- model_descriptions
+
+# Convert existing summary_table row names to a column
+if (is.null(summary_table$Model) && !is.null(rownames(summary_table))) {
+  summary_table$Model <- rownames(summary_table)
+}
+
+# Append new data to the existing summary table
+summary_table <- rbind(summary_table, new_data)
+
+
+rownames(summary_table) <- summary_table$Model
+summary_table$Model <- NULL  
+
+kable(summary_table, format = "html", caption = "Best SARIMA Models") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+
+```
+
+
+```{r}
+str(summary_table)
+```
+
+```{r}
+summary_table = summarize_arima_models(auto_with_aic, auto_with_bic)
+kable(summary_table, format = "html", caption = "Auto.arima Models") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+```{r}
+summary_table
+```
+
+
+### Backtesting
+
+```{r}
+# create validation set
+ntest = 0.80*length(sales_ts_weekly)
+
+pm1 = backtest(model4, sales_ts_weekly, orig=ntest, h=1)
+pm2 = backtest(model5, sales_ts_weekly, orig=ntest, h=1)
+pm3 = backtest(model6, sales_ts_weekly, orig=ntest, h=1)
+pm4 = backtest(model7, sales_ts_weekly, orig=ntest, h=1)
+```
+
+```{r}
+# Create a data frame with the backtesting results
+backtest_results <- data.frame(
+  Model = c("SARIMA(0,1,1)(0,1,1)[52]", 
+            "SARIMA(0,1,2)(0,1,1)[52]", 
+            "SARIMA(1,1,2)(0,1,1)[52]"),
+  RMSE = c(7603.294, 7765.126, 7626.107),
+  MAE = c(5801.433, 6060.102, 5953.322),
+  MAPE = c(0.4926231, 0.5201279, 0.5174485),
+  sMAPE = c(0.4039452, 0.4281201, 0.4123108)
+)
+
+kable(backtest_results, format = "html", caption = "Backtesting Results for SARIMA Models") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+```{r}
+# Load necessary library
+library(dplyr)
+
+# Define the model names as previously described
+model_names <- c(
+  "SARIMA(0,1,1)(0,1,1)[52] w/ λ",
+  "SARIMA(0,1,2)(0,1,1)[52] w/ λ",
+  "SARIMA(1,1,2)(0,1,1)[52] w/ λ",
+  "SARIMA(5,1,1)(1,1,1)[52] w/ λ"
+)
+
+# Define backtesting results
+results <- data.frame(
+  Model = model_names,
+  RMSE = c(7603.294, 7765.126, 7626.107, 7743.23),
+  MAE = c(5801.433, 6060.102, 5953.322, 6005.032),
+  MAPE = c(0.4926231, 0.5201279, 0.5174485, 0.5115314),
+  SMAPE = c(0.4039452, 0.4281201, 0.4123108, 0.4188037)
+)
+
+kable(results, format = "html", caption = "Backtesting Results for SARIMA Models") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+
+### Looking at log sales
+
+```{r}
+# Convert zoo object to a data frame for ggplot
+log_sales = log(sales_zoo_weekly)
+log_sales_ts = log(sales_ts_weekly)
+sales_data_frame <- data.frame(Date = index(log_sales), Sales = coredata(log_sales))
+
+# Create an enhanced time series plot using ggplot2
+ggplot(sales_data_frame, aes(x = Date, y = Sales)) +
+  geom_line(color = "black") +  # Customize line color and thickness
+  geom_smooth(method = "loess", color = "red2", se = FALSE, span = 0.08) + 
+  labs(title = "Weekly Sales Over Time", x = "Date", y = "Total Sales") +
+  theme_minimal() +  # Use a minimalistic theme
+  theme(axis.title.x = element_text(face = "bold", color = "gray20"),  # Customize x-axis title
+        axis.title.y = element_text(face = "bold", color = "gray20"))  # Customize y-axis title
+
+autoplot(decompose(log_sales_ts))
+```
+
+Taking the log of the sales seems to over-correct for any multiplicative behavior in the data.
+
+### Box-cox transformation
+
+```{r}
+library("MASS")
+```
+
+```{r}
+fit = lm(sales_ts_weekly ~ time(sales_ts_weekly))
+plot(fit$residuals ~ fit$fitted.values)
+plot(fit)
+boxcox(fit)
+```
+
+```{r}
+lambda = 0.2
+yBox = (sales_zoo_weekly^lambda-1)/lambda
+autoplot(yBox)
+fitBox = lm(yBox ~ time(sales_ts_weekly))
+plot(fitBox)
+plot(fitBox$residuals ~ fitBox$fitted.values)
+```
+
+
+```{r}
+sales_data_frame <- data.frame(Date = index(yBox), Sales = coredata(yBox))
+
+# Create an enhanced time series plot using ggplot2
+ggplot(sales_data_frame, aes(x = Date, y = Sales)) +
+  geom_line(color = "black") +  # Customize line color and thickness
+  geom_smooth(method = "loess", color = "red2", se = FALSE, span = 0.08) + 
+  labs(title = "Weekly Sales Over Time", x = "Date", y = "Total Sales") +
+  theme_minimal() +  # Use a minimalistic theme
+  theme(axis.title.x = element_text(face = "bold", color = "gray20"),  # Customize x-axis title
+        axis.title.y = element_text(face = "bold", color = "gray20"))  # Customize y-axis title
+
+autoplot(decompose(log_sales_ts))
+```
+
+```{r}
+boxCox(fit, lambda = seq(-2, 2, by = 0.1))
+```
+
