@@ -25,4 +25,22 @@ EDA to find meaningful relationships to aid in choosing a direction of investiga
 - Sales per month-of-year and day-of-month
 
 ### Analyzing Total Weekly Sales for Normality, Stationarity, and Seasonality
-After exploring the data, the most interesting direction of analysis for me was forecasting total sales with a weekly aggregation. The analysis began with an evaluation of several plots to assess the normality, trends, stationarity, and seasonality of the time series, some of which are shown below.
+After exploring the data, the most interesting direction of analysis for me was forecasting total sales with a weekly aggregation. The analysis began with an evaluation of the normality, trends, stationarity, and seasonality of the time series using relevant visualizations and tests, shown below:
+![grid_plot](https://github.com/jorgef2/Sales-Time-Series-Forecasting/assets/135895624/7dff39fc-0ba4-44e3-9cfe-04a662a3304d)
+
+*Interpreting Plots/Tests*
+- Time Series Plot:
+  - Shows a clear annual trend. The LOESS smooth line might show a possible weak multiplicative seasonal effect, despite weekly fluctuations seeming to not increase with sales values.
+- Decomposition Plots:
+  -  The seasonality is smaller than the remainder​
+  -  Remainder is unstructured
+- ACF and PACF Plots:
+  - The ACF plot indicats exponential decay and a one-year cyclical pattern, suggesting the series might be stationary and suitable for an autoregressive model. 
+  - Both ACF and PACF plot show some seasonality at around 52 weeks 
+  - ACF plot shows exponential decay, indicating stationarity and that an AR model might be appropriate 
+  - The PACF plot shows 2 significant lags, so maybe an AR(2) model
+- Normal Q-Q Plot
+  - Clearly Non-normal distribution
+
+
+
